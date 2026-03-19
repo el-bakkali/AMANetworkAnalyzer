@@ -23,7 +23,7 @@ public sealed class AnalysisEngine
     /// <summary>
     /// Runs the full analysis pipeline on raw packets already loaded from a file.
     /// </summary>
-    public AnalysisReport Analyze(string fileName, List<RawPacket> rawPackets)
+    public AnalysisReport Analyze(string fileName, List<RawPacket> rawPackets, List<string>? parseWarnings = null)
     {
         var parsed = PacketParser.ParseAll(rawPackets);
 
@@ -31,7 +31,8 @@ public sealed class AnalysisEngine
         {
             FileName = Path.GetFileName(fileName),
             AnalyzedAt = DateTime.UtcNow,
-            TotalPackets = parsed.Count
+            TotalPackets = parsed.Count,
+            ParseWarnings = parseWarnings ?? []
         };
 
         if (parsed.Count > 1)
@@ -41,12 +42,34 @@ public sealed class AnalysisEngine
                 report.CaptureDuration = ts.Max() - ts.Min();
         }
 
+        // Surface parse warnings as findings
+        if (parseWarnings is { Count: > 0 })
+        {
+            report.Findings.Add(new AnalysisFinding
+            {
+                RuleName = "File Integrity",
+                Category = "File Integrity",
+                Severity = Severity.Warning,
+                Title = $"{parseWarnings.Count} parser warning(s) detected",
+                Detail = string.Join("\n", parseWarnings.Select(w => $"  • {w}")),
+                Recommendation = "The capture file may be truncated or corrupted. Re-capture or obtain a complete copy.",
+                ComplianceTag = "NIST-DE.AE-3 | CIS-8.2"
+            });
+        }
+
         foreach (var rule in _rules)
         {
             try
             {
                 var findings = rule.Analyze(parsed);
-                report.Findings.AddRange(findings);
+                // Deduplicate findings with identical title+category
+                foreach (var finding in findings)
+                {
+                    bool isDuplicate = report.Findings.Any(f =>
+                        f.Title == finding.Title && f.Category == finding.Category);
+                    if (!isDuplicate)
+                        report.Findings.Add(finding);
+                }
             }
             catch (Exception ex)
             {

@@ -4,108 +4,172 @@ using System.Buffers.Binary;
 using AMANetworkAnalyzer.Models;
 
 /// <summary>
-/// Reads pcap (classic) and pcapng capture files.  Pure managed code — no native dependencies.
+/// Reads pcap (classic) and pcapng capture files using streaming I/O.
+/// Pure managed code — no native dependencies.
 /// </summary>
 public static class PcapReader
 {
-    public static List<RawPacket> ReadFile(string filePath)
+    private const long MaxFileSize = 2L * 1024 * 1024 * 1024; // 2 GB safety limit
+    private const int MaxPacketSize = 65535;
+
+    /// <summary>Read packets from a pcap/pcapng file. Returns packets and any parse warnings.</summary>
+    public static (List<RawPacket> Packets, List<string> Warnings) ReadFile(string filePath)
     {
-        byte[] fileBytes = File.ReadAllBytes(filePath);
-        if (fileBytes.Length < 4)
+        var warnings = new List<string>();
+
+        var fileInfo = new FileInfo(filePath);
+        if (fileInfo.Length > MaxFileSize)
+            throw new InvalidDataException($"File exceeds {MaxFileSize / (1024 * 1024)} MB safety limit.");
+        if (fileInfo.Length < 4)
             throw new InvalidDataException("File is too small to be a valid capture.");
 
-        uint magic = BitConverter.ToUInt32(fileBytes, 0);
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 65536);
 
-        return magic switch
+        byte[] magicBuf = new byte[4];
+        if (stream.Read(magicBuf, 0, 4) < 4)
+            throw new InvalidDataException("Cannot read file magic number.");
+
+        uint magic = BitConverter.ToUInt32(magicBuf, 0);
+        stream.Position = 0;
+
+        var packets = magic switch
         {
-            // pcap classic — native byte order (little-endian on x86)
-            0xa1b2c3d4 => ReadPcap(fileBytes, swapped: false, nsResolution: false),
-            // pcap classic — swapped byte order
-            0xd4c3b2a1 => ReadPcap(fileBytes, swapped: true, nsResolution: false),
-            // pcap with nanosecond timestamps — native
-            0xa1b23c4d => ReadPcap(fileBytes, swapped: false, nsResolution: true),
-            // pcap with nanosecond timestamps — swapped
-            0x4d3cb2a1 => ReadPcap(fileBytes, swapped: true, nsResolution: true),
-            // pcapng (Section Header Block type)
-            0x0a0d0d0a => ReadPcapng(fileBytes),
+            0xa1b2c3d4 => ReadPcapStream(stream, swapped: false, nsResolution: false, warnings),
+            0xd4c3b2a1 => ReadPcapStream(stream, swapped: true, nsResolution: false, warnings),
+            0xa1b23c4d => ReadPcapStream(stream, swapped: false, nsResolution: true, warnings),
+            0x4d3cb2a1 => ReadPcapStream(stream, swapped: true, nsResolution: true, warnings),
+            0x0a0d0d0a => ReadPcapngStream(stream, warnings),
             _ => throw new InvalidDataException(
                 $"Unsupported file format (magic: 0x{magic:X8}). Expected .pcap or .pcapng.")
         };
+
+        return (packets, warnings);
     }
 
-    // ── pcap classic ─────────────────────────────────────────────────
+    // ── pcap classic (streaming) ─────────────────────────────────
 
-    private static List<RawPacket> ReadPcap(byte[] data, bool swapped, bool nsResolution)
+    private static List<RawPacket> ReadPcapStream(FileStream stream, bool swapped, bool nsResolution, List<string> warnings)
     {
-        if (data.Length < 24)
+        byte[] header = new byte[24];
+        if (stream.Read(header, 0, 24) < 24)
             throw new InvalidDataException("Pcap global header is incomplete.");
 
-        // Global header: magic(4) + version(4) + thiszone(4) + sigfigs(4) + snaplen(4) + network(4) = 24
-        uint snapLen = Read32(data, 16, swapped);
-        uint network = Read32(data, 20, swapped);
+        uint network = Read32(header, 20, swapped);
         var linkType = (LinkLayerType)network;
 
         var packets = new List<RawPacket>();
-        int offset = 24;
+        byte[] pktHeader = new byte[16];
+        int truncatedCount = 0;
 
-        while (offset + 16 <= data.Length)
+        while (true)
         {
-            uint tsSec = Read32(data, offset, swapped);
-            uint tsFrac = Read32(data, offset + 4, swapped);
-            uint capturedLen = Read32(data, offset + 8, swapped);
-            uint originalLen = Read32(data, offset + 12, swapped);
-            offset += 16;
-
-            if (capturedLen > 65535) // max realistic captured packet size
+            int bytesRead = ReadFully(stream, pktHeader, 0, 16);
+            if (bytesRead == 0) break;
+            if (bytesRead < 16)
+            {
+                truncatedCount++;
+                warnings.Add($"Pcap file truncated — incomplete packet header at offset {stream.Position - bytesRead}.");
                 break;
+            }
 
-            if (offset + (int)capturedLen > data.Length)
+            uint tsSec = Read32(pktHeader, 0, swapped);
+            uint tsFrac = Read32(pktHeader, 4, swapped);
+            uint capturedLen = Read32(pktHeader, 8, swapped);
+            uint originalLen = Read32(pktHeader, 12, swapped);
+
+            if (capturedLen > MaxPacketSize)
+            {
+                warnings.Add($"Packet at offset {stream.Position - 16} has unrealistic captured length ({capturedLen}). Stopping parse.");
                 break;
+            }
 
             byte[] pktData = new byte[capturedLen];
-            Buffer.BlockCopy(data, offset, pktData, 0, (int)capturedLen);
-            offset += (int)capturedLen;
+            int pktBytesRead = ReadFully(stream, pktData, 0, (int)capturedLen);
+            if (pktBytesRead < (int)capturedLen)
+            {
+                truncatedCount++;
+                warnings.Add($"Pcap file truncated — packet data incomplete ({pktBytesRead}/{capturedLen} bytes).");
+                if (pktBytesRead > 40)
+                {
+                    byte[] partial = new byte[pktBytesRead];
+                    Buffer.BlockCopy(pktData, 0, partial, 0, pktBytesRead);
+                    pktData = partial;
+                }
+                else break;
+            }
+
+            if (originalLen > capturedLen) truncatedCount++;
 
             long microseconds = nsResolution ? tsFrac / 1000 : tsFrac;
             var ts = DateTimeOffset.FromUnixTimeSeconds(tsSec).UtcDateTime
-                         .AddTicks(microseconds * 10); // 1 µs = 10 ticks
+                         .AddTicks(microseconds * 10);
 
             packets.Add(new RawPacket(ts, pktData, linkType));
         }
 
+        if (truncatedCount > 0)
+            warnings.Add($"Total packets with truncation indicators: {truncatedCount}.");
+
         return packets;
     }
 
-    // ── pcapng ───────────────────────────────────────────────────────
+    // ── pcapng (streaming) ───────────────────────────────────────
 
-    private static List<RawPacket> ReadPcapng(byte[] data)
+    private static List<RawPacket> ReadPcapngStream(FileStream stream, List<string> warnings)
     {
         var packets = new List<RawPacket>();
         var interfaces = new List<PcapngInterface>();
         bool swapped = false;
-        int offset = 0;
+        int truncatedBlocks = 0;
+        byte[] blockHeaderBuf = new byte[8];
 
-        while (offset + 12 <= data.Length)
+        while (true)
         {
-            uint blockType = Read32(data, offset, swapped);
-            uint blockLen = Read32(data, offset + 4, swapped);
-
-            if (blockLen < 12 || offset + (int)blockLen > data.Length)
+            int headerRead = ReadFully(stream, blockHeaderBuf, 0, 8);
+            if (headerRead == 0) break;
+            if (headerRead < 8)
+            {
+                warnings.Add("Pcapng file truncated — incomplete block header.");
+                truncatedBlocks++;
                 break;
+            }
 
-            int bodyOffset = offset + 8;
-            int bodyLen = (int)blockLen - 12; // minus type(4) + length(4) + trailing length(4)
+            uint blockType = Read32(blockHeaderBuf, 0, swapped);
+            uint blockLen = Read32(blockHeaderBuf, 4, swapped);
+
+            if (blockLen < 12)
+            {
+                warnings.Add($"Invalid pcapng block length ({blockLen}). Stopping parse.");
+                break;
+            }
+
+            int bodyLen = (int)blockLen - 12;
+            if (bodyLen < 0 || blockLen > 16 * 1024 * 1024)
+            {
+                warnings.Add($"Block length {blockLen} exceeds maximum. Stopping parse.");
+                break;
+            }
+
+            byte[] body = new byte[bodyLen];
+            int bodyRead = ReadFully(stream, body, 0, bodyLen);
+            if (bodyRead < bodyLen)
+            {
+                warnings.Add("Pcapng file truncated — incomplete block body.");
+                truncatedBlocks++;
+                break;
+            }
+
+            byte[] trailBuf = new byte[4];
+            ReadFully(stream, trailBuf, 0, 4);
 
             switch (blockType)
             {
                 case 0x0a0d0d0a: // Section Header Block
                     if (bodyLen >= 4)
                     {
-                        uint bom = BitConverter.ToUInt32(data, bodyOffset);
+                        uint bom = BitConverter.ToUInt32(body, 0);
                         swapped = bom == 0x4d3c2b1a;
-                        // re-read blockLen with correct endianness
-                        blockLen = Read32(data, offset + 4, swapped);
-                        bodyLen = (int)blockLen - 12;
+                        blockLen = Read32(blockHeaderBuf, 4, swapped);
                     }
                     interfaces.Clear();
                     break;
@@ -113,20 +177,21 @@ public static class PcapReader
                 case 0x00000001: // Interface Description Block
                     if (bodyLen >= 8)
                     {
-                        ushort lt = Read16(data, bodyOffset, swapped);
-                        uint snap = Read32(data, bodyOffset + 4, swapped);
-                        // Parse options for if_tsresol (option code 9)
-                        byte tsResol = 6; // default: microseconds (10^-6)
-                        int optOff = bodyOffset + 8;
-                        int optEnd = bodyOffset + bodyLen;
-                        while (optOff + 4 <= optEnd)
+                        ushort lt = Read16(body, 0, swapped);
+                        uint snap = Read32(body, 4, swapped);
+                        byte tsResol = 6;
+                        int optOff = 8;
+                        while (optOff + 4 <= bodyLen)
                         {
-                            ushort optCode = Read16(data, optOff, swapped);
-                            ushort optLen = Read16(data, optOff + 2, swapped);
-                            if (optCode == 0) break; // opt_endofopt
-                            if (optCode == 9 && optLen >= 1) // if_tsresol
-                                tsResol = data[optOff + 4];
-                            optOff += 4 + ((optLen + 3) & ~3); // padded to 4 bytes
+                            ushort optCode = Read16(body, optOff, swapped);
+                            ushort optLen = Read16(body, optOff + 2, swapped);
+                            if (optCode == 0) break;
+                            int optValueEnd = optOff + 4 + optLen;
+                            if (optValueEnd > bodyLen) break;
+                            if (optCode == 9 && optLen >= 1)
+                                tsResol = body[optOff + 4];
+                            optOff += 4 + ((optLen + 3) & ~3);
+                            if (optOff < 0) break;
                         }
                         interfaces.Add(new PcapngInterface((LinkLayerType)lt, snap, tsResol));
                     }
@@ -135,18 +200,20 @@ public static class PcapReader
                 case 0x00000006: // Enhanced Packet Block
                     if (bodyLen >= 20)
                     {
-                        uint ifId = Read32(data, bodyOffset, swapped);
-                        uint tsHigh = Read32(data, bodyOffset + 4, swapped);
-                        uint tsLow = Read32(data, bodyOffset + 8, swapped);
-                        uint capLen = Read32(data, bodyOffset + 12, swapped);
-                        // uint origLen = Read32(data, bodyOffset + 16, swapped);
-                        int pktStart = bodyOffset + 20;
+                        uint ifId = Read32(body, 0, swapped);
+                        uint tsHigh = Read32(body, 4, swapped);
+                        uint tsLow = Read32(body, 8, swapped);
+                        uint capLen = Read32(body, 12, swapped);
+                        int pktStart = 20;
 
-                        if (capLen > 65535 || pktStart + (int)capLen > data.Length)
+                        if (capLen > MaxPacketSize || pktStart + (int)capLen > bodyLen)
+                        {
+                            truncatedBlocks++;
                             break;
+                        }
 
                         byte[] pktData = new byte[capLen];
-                        Buffer.BlockCopy(data, pktStart, pktData, 0, (int)capLen);
+                        Buffer.BlockCopy(body, pktStart, pktData, 0, (int)capLen);
 
                         var iface = ifId < interfaces.Count ? interfaces[(int)ifId] : interfaces.FirstOrDefault();
                         var linkType = iface?.LinkType ?? LinkLayerType.Ethernet;
@@ -161,24 +228,24 @@ public static class PcapReader
                 case 0x00000003: // Simple Packet Block
                     if (bodyLen >= 4 && interfaces.Count > 0)
                     {
-                        uint origLen = Read32(data, bodyOffset, swapped);
+                        uint origLen = Read32(body, 0, swapped);
                         uint capLen = Math.Min(origLen, interfaces[0].SnapLen);
-                        int pktStart = bodyOffset + 4;
+                        if (capLen > MaxPacketSize) break;
+                        int pktStart = 4;
 
-                        if (pktStart + (int)capLen <= data.Length)
+                        if (pktStart + (int)capLen <= bodyLen)
                         {
                             byte[] pktData = new byte[capLen];
-                            Buffer.BlockCopy(data, pktStart, pktData, 0, (int)capLen);
+                            Buffer.BlockCopy(body, pktStart, pktData, 0, (int)capLen);
                             packets.Add(new RawPacket(DateTime.MinValue, pktData, interfaces[0].LinkType));
                         }
                     }
                     break;
             }
-
-            // Advance to next block (block length is padded to 4 bytes in pcapng)
-            offset += (int)((blockLen + 3) & ~3u);
-            if ((int)blockLen <= 0) break; // prevent infinite loop
         }
+
+        if (truncatedBlocks > 0)
+            warnings.Add($"Pcapng file has {truncatedBlocks} truncated or invalid blocks.");
 
         return packets;
     }
@@ -197,25 +264,31 @@ public static class PcapReader
         }
 
         double seconds = tsVal / divisor;
-
-        // Validate the result is in a reasonable range (1970 to 2100)
         if (seconds < 0 || seconds > 4_102_444_800)
             return DateTime.UtcNow;
 
         long ticks = (long)(seconds * TimeSpan.TicksPerSecond);
         var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
-        try
-        {
-            return epoch.AddTicks(ticks);
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            return DateTime.UtcNow;
-        }
+        try { return epoch.AddTicks(ticks); }
+        catch (ArgumentOutOfRangeException) { return DateTime.UtcNow; }
     }
 
-    // ── Endian helpers ───────────────────────────────────────────────
+    // ── Stream helpers ───────────────────────────────────────────
+
+    private static int ReadFully(Stream stream, byte[] buffer, int offset, int count)
+    {
+        int totalRead = 0;
+        while (totalRead < count)
+        {
+            int bytesRead = stream.Read(buffer, offset + totalRead, count - totalRead);
+            if (bytesRead == 0) break;
+            totalRead += bytesRead;
+        }
+        return totalRead;
+    }
+
+    // ── Endian helpers ───────────────────────────────────────────
 
     private static ushort Read16(byte[] data, int offset, bool swapped)
     {

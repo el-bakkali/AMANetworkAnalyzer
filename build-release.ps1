@@ -2,7 +2,7 @@
 # Usage: .\build-release.ps1
 
 $ErrorActionPreference = "Stop"
-$Version = "1.0.0"
+$Version = "2.0.0"
 $ProjectPath = "src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj"
 $OutputDir = "release"
 $ZipName = "AMANetworkAnalyzer-v$Version-win-x64.zip"

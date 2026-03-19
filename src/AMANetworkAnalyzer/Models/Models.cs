@@ -166,6 +166,9 @@ public sealed class AnalysisFinding
     public string? Recommendation { get; init; }
     public string? WiresharkFilter { get; init; }
     public List<int> RelatedPacketIndices { get; init; } = [];
+
+    /// <summary>Security compliance tag (e.g. "OWASP-A03", "NIST-PR.DS", "CIS-8.2").</summary>
+    public string? ComplianceTag { get; init; }
 }
 
 public sealed class AnalysisReport
@@ -176,10 +179,25 @@ public sealed class AnalysisReport
     public TimeSpan CaptureDuration { get; set; }
     public List<AnalysisFinding> Findings { get; set; } = [];
 
+    /// <summary>Warnings from the pcap/etl parser (truncation, format issues).</summary>
+    public List<string> ParseWarnings { get; set; } = [];
+
     public int PassCount => Findings.Count(f => f.Severity == Severity.Pass);
     public int InfoCount => Findings.Count(f => f.Severity == Severity.Info);
     public int WarningCount => Findings.Count(f => f.Severity == Severity.Warning);
     public int ErrorCount => Findings.Count(f => f.Severity == Severity.Error);
+}
+
+// ── Allowed file types for input validation ──────────────────────────
+public static class AllowedCaptureTypes
+{
+    private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".pcap", ".pcapng", ".cap", ".etl", ".cab" };
+
+    public static bool IsSupported(string extension) => SupportedExtensions.Contains(extension);
+    public static bool IsPcap(string ext) => ext is ".pcap" or ".pcapng" or ".cap";
+    public static bool IsEtl(string ext) => ext is ".etl";
+    public static bool IsCab(string ext) => ext is ".cab";
 }
 
 // ── TLS cipher suites known to AMA ──────────────────────────────────
