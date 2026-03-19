@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>AMANetworkAnalyzer</AssemblyName>
+    <RootNamespace>AMANetworkAnalyzer</RootNamespace>
+    <Version>1.0.0</Version>
+    <Description>Azure Monitor Agent Network Trace Analyzer</Description>
+  </PropertyGroup>
+
+  <!-- Single-file publish settings (use dotnet publish -r win-x64 to create exe) -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+
+</Project>
