@@ -2,11 +2,15 @@
 
 A Windows desktop tool for novice engineers to diagnose Azure Monitor Agent (AMA) network connectivity issues by analyzing packet capture files.
 
-**Drop a `.pcap`, `.pcapng`, or `.etl` file → get an instant diagnostic report.**
+**Drop a `.pcap`, `.pcapng`, `.etl`, or `.cab` file → get an instant diagnostic report. Click any finding to drill down to the exact packets.**
 
 ## Features
 
-- **Drag-and-drop** `.pcap`, `.pcapng`, and `.etl` capture files
+- **Drag-and-drop** `.pcap`, `.pcapng`, `.etl`, and `.cab` capture files
+- **Drill-down packet detail panel** — Click any finding or severity badge to view the exact affected packets with timestamps, IPs, ports, DNS/TLS/HTTP details
+- **Streaming pcap reader** — Memory-efficient file processing (supports files up to 2 GB without loading into memory)
+- **.cab file support** — Windows `netsh trace` `.cab` archives are automatically extracted and converted
+- **Security compliance tags** — Findings tagged with OWASP ASVS, NIST CSF, and CIS Controls references
 - **7 automated diagnostic rules** based on the AMA Network Troubleshooting Guide:
   1. **Endpoint Connectivity** — Verifies traffic to all required AMA endpoints
   2. **DNS Resolution** — Checks DNS queries/responses for AMA domains (NXDOMAIN, SERVFAIL)
@@ -17,10 +21,13 @@ A Windows desktop tool for novice engineers to diagnose Azure Monitor Agent (AMA
      - TLS 1.3: `TLS_AES_256_GCM_SHA384`, `TLS_AES_128_GCM_SHA256`
      - TLS 1.2: `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`, `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`
   7. **Private Link / AMPLS Detection** — Detects when AMA endpoints resolve to private IPs, indicates AMPLS usage, and flags mixed public/private DNS misconfigurations
+- **File integrity warnings** — Detects truncated/corrupted pcap files and surfaces parse warnings
+- **Input validation** — File extension validation with magic-number fallback, path traversal protection
 - **Sovereign cloud support** — Azure Commercial (`.com`), Azure Government (`.us`), and Azure China 21Vianet (`.cn`)
 - **Wireshark filter suggestions** — Each finding includes a clickable Wireshark display filter (copies to clipboard)
-- **Export reports** to text or Markdown
-- **Dark-themed WPF UI** with pass/warn/error severity badges
+- **Async export** — Non-blocking report export to text or Markdown
+- **Finding deduplication** — Identical findings are merged instead of shown multiple times
+- **Dark-themed WPF UI** with pass/warn/error severity badges and split-pane drill-down
 
 ## Zero Dependencies
 
@@ -43,17 +50,39 @@ dotnet publish "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAn
 # Output: publish\AMANetworkAnalyzer.exe
 ```
 
-## ETL Support
+## ETL and CAB Support
 
 For Microsoft `.etl` network traces (from `netsh trace`), the tool uses Microsoft's open-source [etl2pcapng](https://github.com/microsoft/etl2pcapng) converter (MIT license).
 
-**No setup required.** Just drop an `.etl` file. The app will:
-1. Check if `etl2pcapng.exe` is already available locally
-2. If not found, **download v1.11.0** from [GitHub releases](https://github.com/microsoft/etl2pcapng/releases/tag/v1.11.0)
-3. **Verify integrity** before execution
-4. Convert the ETL to pcapng and analyze it
+For `.cab` archives (also produced by `netsh trace`), the tool automatically extracts the `.etl` file using Windows' built-in `expand.exe`, then converts it.
+
+**No setup required.** Just drop an `.etl` or `.cab` file. The app will:
+1. If `.cab` → extract `.etl` from the archive
+2. Check if `etl2pcapng.exe` is already available locally
+3. If not found, **download v1.11.0** from [GitHub releases](https://github.com/microsoft/etl2pcapng/releases/tag/v1.11.0)
+4. **Verify SHA-256 integrity** before execution
+5. Convert the ETL to pcapng and analyze it
 
 The download happens once and is cached for future use. For offline/air-gapped machines, manually place `etl2pcapng.exe` next to the app or in a `tools\` subfolder.
+
+## What's New in v2.0
+
+- **Drill-down UI** — Click any finding → see the exact affected packets (IPs, ports, DNS, TLS, HTTP) in a detail panel. Click severity badges (PASS/INFO/WARN/ERROR) to filter.
+- **.cab file support** — Windows `netsh trace` `.cab` archives are automatically extracted and analyzed.
+- **Streaming pcap reader** — Files streamed from disk instead of loaded into memory. Supports up to 2 GB.
+- **Truncation warnings** — Truncated/corrupted pcap files are detected and surfaced as warnings.
+- **Security compliance tags** — Findings include OWASP, NIST CSF, and CIS Controls references.
+- **Input validation** — File extension + magic-number validation, path traversal protection.
+- **Async export** — Report export runs asynchronously so it doesn't block the UI.
+- **Finding deduplication** — Identical findings are merged instead of shown multiple times.
+
+## Security & Privacy
+
+- **100% offline analysis** — Your files are processed locally. No data is sent to the cloud, no telemetry, no phone-home
+- **No external dependencies** — Zero third-party libraries. Built entirely on .NET standard libraries
+- **Input validation** — File extension allowlisting, magic-number verification, path traversal protection (OWASP ASVS)
+- **SHA-256 integrity verification** — `etl2pcapng` downloads are verified against a pinned hash before execution
+- **Compliance-aware findings** — Tagged with OWASP ASVS, NIST CSF, and CIS Controls references
 
 ## AMA Endpoints Checked
 
