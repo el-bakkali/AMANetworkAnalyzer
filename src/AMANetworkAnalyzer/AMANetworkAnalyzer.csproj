@@ -4,17 +4,20 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AMANetworkAnalyzer</AssemblyName>
     <RootNamespace>AMANetworkAnalyzer</RootNamespace>
-    <Version>2.0.0</Version>
     <Description>Azure Monitor Agent Network Trace Analyzer</Description>
   </PropertyGroup>
 
-  <!-- Single-file publish settings (use dotnet publish -r win-x64 to create exe) -->
+  <!-- Single-file publish settings (build-release.ps1 supplies the RID) -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AMANetworkAnalyzer.Core\AMANetworkAnalyzer.Core.csproj" />
+  </ItemGroup>
 
 </Project>

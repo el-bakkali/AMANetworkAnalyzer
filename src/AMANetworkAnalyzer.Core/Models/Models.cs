@@ -60,8 +60,8 @@ public sealed class ParsedPacket
     public TlsInfo? Tls { get; set; }
     public HttpInfo? Http { get; set; }
 
-    // Raw payload (TCP/UDP payload bytes, for content matching)
-    public byte[] Payload { get; set; } = [];
+    /// <summary>TCP/UDP payload as a slice of the captured frame — not a copy.</summary>
+    public ReadOnlyMemory<byte> Payload { get; set; }
 
     public bool HasFlag(TcpFlags flag) => (TcpFlags & flag) == flag;
 
@@ -256,25 +256,43 @@ public static class AmaEndpoints
         ("monitoring.azure.cn", "Custom metrics ingestion (China)"),
     ];
 
+    /// <summary>
+    /// True when <paramref name="hostname"/> is the pattern itself or a DNS child of it.
+    /// A plain suffix test would wrongly match "notods.opinsights.azure.com", so the
+    /// character before the suffix must be a label separator.
+    /// </summary>
+    public static bool Matches(string? hostname, string pattern)
+    {
+        if (string.IsNullOrEmpty(hostname)) return false;
+
+        ReadOnlySpan<char> host = hostname.AsSpan().TrimEnd('.');
+        ReadOnlySpan<char> pat = pattern.AsSpan();
+
+        if (host.Equals(pat, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return host.Length > pat.Length
+            && host[host.Length - pat.Length - 1] == '.'
+            && host[^pat.Length..].Equals(pat, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Checks if a hostname matches any AMA endpoint pattern.</summary>
-    public static bool IsAmaEndpoint(string hostname)
+    public static bool IsAmaEndpoint(string? hostname)
     {
         foreach (var (pattern, _) in All)
         {
-            if (hostname.EndsWith(pattern, StringComparison.OrdinalIgnoreCase) ||
-                hostname.Equals(pattern, StringComparison.OrdinalIgnoreCase))
+            if (Matches(hostname, pattern))
                 return true;
         }
         return false;
     }
 
     /// <summary>Returns the matching endpoint description, or null.</summary>
-    public static string? MatchEndpoint(string hostname)
+    public static string? MatchEndpoint(string? hostname)
     {
         foreach (var (pattern, desc) in All)
         {
-            if (hostname.EndsWith(pattern, StringComparison.OrdinalIgnoreCase) ||
-                hostname.Equals(pattern, StringComparison.OrdinalIgnoreCase))
+            if (Matches(hostname, pattern))
                 return desc;
         }
         return null;

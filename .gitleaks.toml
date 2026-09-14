@@ -1,0 +1,64 @@
+# gitleaks configuration for AMANetworkAnalyzer
+#
+# Extends the default ruleset (API keys, tokens, private keys) with custom rules
+# for personal and corporate identifiers, which gitleaks does not detect by default.
+#
+# gitleaks uses Go's RE2 engine - lookarounds are NOT supported. Exclusions must
+# be expressed via [allowlist] regexes instead.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "corporate-email"
+description = "Corporate or organisational email address"
+regex = '''[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(microsoft|techsupport|onmicrosoft|office)\.[A-Za-z]{2,}'''
+tags = ["pii", "email"]
+
+  [rules.allowlist]
+  description = "GitHub privacy addresses are not PII"
+  regexes = [
+    '''@users\.noreply\.github\.com''',
+  ]
+
+[[rules]]
+id = "internal-domain"
+description = "Internal or corporate-only domain name"
+regex = '''\b[A-Za-z0-9-]+\.(gbl|corp\.microsoft\.com)\b'''
+tags = ["pii", "internal"]
+
+[[rules]]
+id = "windows-user-profile-path"
+description = "Absolute path containing a Windows user profile name"
+regex = '''[A-Za-z]:\\Users\\[A-Za-z0-9._-]+'''
+tags = ["pii", "filesystem"]
+
+  [rules.allowlist]
+  description = "Shared profiles are not personally identifying"
+  regexes = [
+    '''[A-Za-z]:\\Users\\(Public|Default|All Users)''',
+  ]
+
+[[rules]]
+id = "azure-subscription-guid"
+description = "Azure subscription or tenant GUID"
+regex = '''(?i)(subscription|tenant)[-_ ]?id["'\s:=]{1,4}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+tags = ["pii", "azure"]
+
+[allowlist]
+description = "Paths and values that are safe by design"
+
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''(^|/)(bin|obj)/''',
+  '''(^|/)TestResults/''',
+]
+
+regexes = [
+  # The pinned etl2pcapng SHA-256 is a public integrity hash, not a secret.
+  '''C2D03AAC43EA0F5626FC8D909E6688393FEAF71BD6FACD39AAF8A637382D9043''',
+  # Public Azure service endpoints checked by the analyzer.
+  '''(ods\.opinsights|handler\.control\.monitor|ingest\.monitor|monitoring)\.azure\.(com|us|cn)''',
+  '''management\.azure\.(com|us|cn)''',
+  '''global\.prod\.microsoftmetrics\.com''',
+]

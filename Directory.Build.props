@@ -1,0 +1,24 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!-- Fail the build on any warning; a parser for untrusted input should have none. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <Version>2.1.0</Version>
+    <Authors>el-bakkali</Authors>
+    <Product>AMA Network Analyzer</Product>
+  </PropertyGroup>
+
+</Project>

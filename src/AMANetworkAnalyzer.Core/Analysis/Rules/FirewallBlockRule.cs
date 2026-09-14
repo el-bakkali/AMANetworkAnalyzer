@@ -55,15 +55,25 @@ public sealed class FirewallBlockRule : IAnalysisRule
 
             foreach (var rst in amaRstPackets)
             {
-                // Look at surrounding packets to determine context
-                var prevPackets = packets
-                    .Where(p => p.Index < rst.Index && p.Index >= rst.Index - 5)
-                    .Where(p => (p.DestIp == rst.SourceIp || p.DestIp == rst.DestIp) &&
-                                (p.SourceIp == rst.SourceIp || p.SourceIp == rst.DestIp))
-                    .ToList();
+                // Index equals position in the parsed list, so the preceding packets are a
+                // direct range. Scanning the whole capture per RST was quadratic.
+                int start = Math.Max(0, rst.Index - 5);
+                bool hadTls = false;
+                bool hadSynOnly = false;
 
-                bool hadTls = prevPackets.Any(p => p.Tls is not null);
-                bool hadSynOnly = prevPackets.Any(p => p.HasFlag(TcpFlags.SYN) && !p.HasFlag(TcpFlags.ACK));
+                for (int i = start; i < rst.Index && i < packets.Count; i++)
+                {
+                    var previous = packets[i];
+
+                    bool sameConversation =
+                        (previous.DestIp == rst.SourceIp || previous.DestIp == rst.DestIp) &&
+                        (previous.SourceIp == rst.SourceIp || previous.SourceIp == rst.DestIp);
+
+                    if (!sameConversation) continue;
+
+                    if (previous.Tls is not null) hadTls = true;
+                    if (previous.HasFlag(TcpFlags.SYN) && !previous.HasFlag(TcpFlags.ACK)) hadSynOnly = true;
+                }
 
                 if (hadTls)
                     rstAfterTls.Add(rst);

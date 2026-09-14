@@ -1,5 +1,6 @@
 namespace AMANetworkAnalyzer.ViewModels;
 
+using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
@@ -17,6 +18,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     // Store all parsed packets for drill-down
     private List<ParsedPacket> _allPackets = [];
+
+    private CancellationTokenSource? _analysisCts;
 
     public MainViewModel()
     {
@@ -109,6 +112,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task LoadAndAnalyzeAsync(string path)
     {
+        var cts = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _analysisCts, cts);
+
+        // Supersede any run still in flight; dropping a second file must not race the first.
+        try { previous?.Cancel(); }
+        catch (ObjectDisposedException) { /* already finished */ }
+
+        CancellationToken cancellationToken = cts.Token;
+
         ErrorMessage = null;
         Report = null;
         SelectedFinding = null;
@@ -124,7 +136,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            // Security: validate and sanitize path (OWASP path traversal)
             string fullPath = Path.GetFullPath(path);
             if (!File.Exists(fullPath))
             {
@@ -133,68 +144,58 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            string ext = Path.GetExtension(fullPath).ToLowerInvariant();
+            string extension = Path.GetExtension(fullPath).ToLowerInvariant();
 
-            // Security: validate file extension (OWASP input validation / CIS-16)
-            if (!AllowedCaptureTypes.IsSupported(ext))
+            if (!AllowedCaptureTypes.IsSupported(extension) && !HasCaptureMagic(fullPath))
             {
-                // Fallback: check magic number for pcap
-                using var probe = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                byte[] header = new byte[4];
-                if (probe.Read(header, 0, 4) >= 4)
-                {
-                    uint magic = BitConverter.ToUInt32(header, 0);
-                    bool isPcapMagic = magic is 0xa1b2c3d4 or 0xd4c3b2a1 or 0xa1b23c4d or 0x4d3cb2a1 or 0x0a0d0d0a;
-                    if (!isPcapMagic)
-                    {
-                        ErrorMessage = $"Unsupported file extension '{ext}'. Supported: .pcap, .pcapng, .cap, .etl, .cab";
-                        StatusMessage = "Analysis failed.";
-                        return;
-                    }
-                }
+                ErrorMessage = $"Unsupported file '{extension}'. Supported: .pcap, .pcapng, .cap, .etl, .cab";
+                StatusMessage = "Analysis failed.";
+                return;
             }
 
             string analysisPath = fullPath;
 
-            // CAB extraction: extract .etl from .cab archive
-            if (AllowedCaptureTypes.IsCab(ext))
+            if (AllowedCaptureTypes.IsCab(extension))
             {
                 StatusMessage = "Extracting .etl from .cab archive…";
 
-                var (etlPath, tempDir, cabError) = await CabExtractor.ExtractEtlFromCabAsync(fullPath);
+                var (etlPath, tempDir, cabError) = await CabExtractor
+                    .ExtractEtlFromCabAsync(fullPath, cancellationToken);
                 cabTempDir = tempDir;
 
                 if (etlPath is null)
                 {
                     ErrorMessage = $"CAB extraction failed:\n{cabError}";
+                    StatusMessage = "Analysis failed.";
                     return;
                 }
 
-                // Now treat the extracted .etl as the input
                 analysisPath = etlPath;
-                ext = ".etl";
+                extension = ".etl";
             }
 
-            // ETL conversion
-            if (AllowedCaptureTypes.IsEtl(ext))
+            if (AllowedCaptureTypes.IsEtl(extension))
             {
                 StatusMessage = "Checking for etl2pcapng…";
 
-                var (available, dlError) = await EtlConverter.EnsureAvailableAsync(
-                    status => StatusMessage = status);
+                var (available, downloadError) = await EtlConverter.EnsureAvailableAsync(
+                    status => StatusMessage = status, cancellationToken);
 
                 if (!available)
                 {
-                    ErrorMessage = dlError ?? "etl2pcapng.exe could not be obtained.";
+                    ErrorMessage = downloadError ?? "etl2pcapng.exe could not be obtained.";
+                    StatusMessage = "Analysis failed.";
                     return;
                 }
 
                 StatusMessage = "Converting ETL to pcapng…";
 
-                var (pcapngPath, error) = await EtlConverter.ConvertAsync(analysisPath);
+                var (pcapngPath, conversionError) = await EtlConverter
+                    .ConvertAsync(analysisPath, cancellationToken);
                 if (pcapngPath is null)
                 {
-                    ErrorMessage = $"ETL conversion failed:\n{error}";
+                    ErrorMessage = $"ETL conversion failed:\n{conversionError}";
+                    StatusMessage = "Analysis failed.";
                     return;
                 }
 
@@ -204,30 +205,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             StatusMessage = "Parsing packets…";
 
-            var report = await Task.Run(() =>
+            // One read, one dissection. The parsed packets feed both the report and the
+            // drill-down view; parsing twice previously doubled time and peak memory.
+            var (packets, report) = await Task.Run(() =>
             {
-                var (rawPackets, parseWarnings) = PcapReader.ReadFile(analysisPath);
-                return _engine.Analyze(fullPath, rawPackets, parseWarnings);
-            });
+                var (parsed, parseWarnings) = PcapReader.ReadAndParse(analysisPath, cancellationToken);
+                return (parsed, _engine.AnalyzeParsed(fullPath, parsed, parseWarnings));
+            }, cancellationToken);
 
-            // Re-parse packets for drill-down (on background thread)
-            _allPackets = await Task.Run(() =>
-            {
-                var (rawPackets, _) = PcapReader.ReadFile(analysisPath);
-                return PacketParser.ParseAll(rawPackets);
-            });
+            cancellationToken.ThrowIfCancellationRequested();
 
+            _allPackets = packets;
             Report = report;
 
-            var groups = report.Findings
-                .GroupBy(f => f.Category)
-                .Select(g => new FindingGroup(g.Key, g.ToList()))
-                .ToList();
-
-            foreach (var group in groups)
+            foreach (var group in report.Findings
+                         .GroupBy(f => f.Category)
+                         .Select(g => new FindingGroup(g.Key, g.ToList())))
+            {
                 GroupedFindings.Add(group);
+            }
 
             StatusMessage = $"Analysis complete — {report.TotalPackets:N0} packets, {report.Findings.Count} findings";
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer file; the newer run owns the UI state.
         }
         catch (InvalidDataException ex)
         {
@@ -239,6 +241,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ErrorMessage = "Access denied — cannot read the specified file.";
             StatusMessage = "Analysis failed.";
         }
+        catch (IOException ex)
+        {
+            ErrorMessage = $"Could not read the file: {ex.Message}";
+            StatusMessage = "Analysis failed.";
+        }
         catch (Exception ex)
         {
             ErrorMessage = $"Error: {ex.Message}";
@@ -246,14 +253,37 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         finally
         {
-            IsAnalyzing = false;
+            if (Interlocked.CompareExchange(ref _analysisCts, null, cts) == cts)
+                IsAnalyzing = false;
+
+            cts.Dispose();
 
             if (tempPcapng is not null)
             {
-                try { File.Delete(tempPcapng); } catch { }
+                try { File.Delete(tempPcapng); }
+                catch (IOException) { /* best effort */ }
+                catch (UnauthorizedAccessException) { /* best effort */ }
             }
             CabExtractor.CleanupTempDir(cabTempDir);
         }
+    }
+
+    /// <summary>
+    /// Fallback check for files whose extension is not recognised: the leading bytes must
+    /// still identify a supported capture format before anything else touches the file.
+    /// </summary>
+    private static bool HasCaptureMagic(string fullPath)
+    {
+        try
+        {
+            using var probe = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+            Span<byte> header = stackalloc byte[4];
+            return probe.ReadAtLeast(header, 4, throwOnEndOfStream: false) >= 4
+                   && PcapReader.IsKnownMagic(BinaryPrimitives.ReadUInt32LittleEndian(header));
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
     }
 
     /// <summary>Drill-down: show packets related to a specific finding.</summary>
@@ -340,26 +370,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (dlg.ShowDialog() != true) return;
 
         bool markdown = dlg.FilterIndex == 2;
+        var report = Report;
+        string targetPath = dlg.FileName;
         StatusMessage = "Exporting report…";
 
         try
         {
             await Task.Run(() =>
             {
-                using var writer = new StreamWriter(dlg.FileName, false, Encoding.UTF8);
-                WriteReport(writer, Report, markdown);
+                using var writer = new StreamWriter(targetPath, false, Encoding.UTF8);
+                WriteReport(writer, report, markdown);
             });
-            StatusMessage = $"Report exported to {Path.GetFileName(dlg.FileName)}";
+            StatusMessage = $"Report exported to {Path.GetFileName(targetPath)}";
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Export error: {ex}");
-            StatusMessage = "Export failed.";
+            // This is an async void handler: anything that escapes here terminates the
+            // process rather than surfacing to the user, so the catch is deliberately broad.
+            StatusMessage = $"Export failed: {ex.Message}";
         }
     }
 
     private static void WriteReport(StreamWriter writer, AnalysisReport report, bool md)
     {
+        // Hostnames, URIs and TLS names come from the capture and are attacker-controlled,
+        // so every value written here is escaped for the target format.
+        string Text(string? value) => md ? SafeText.MarkdownEscape(value) : SafeText.PlainText(value);
+
         string h1 = md ? "# " : "";
         string h2 = md ? "## " : "=== ";
         string h3 = md ? "### " : "--- ";
@@ -367,7 +404,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         writer.WriteLine($"{h1}AMA Network Trace Analysis Report");
         writer.WriteLine();
-        writer.WriteLine($"File: {report.FileName}");
+        writer.WriteLine($"File: {Text(report.FileName)}");
         writer.WriteLine($"Analyzed: {report.AnalyzedAt:yyyy-MM-dd HH:mm:ss} UTC");
         writer.WriteLine($"Packets: {report.TotalPackets:N0}");
         writer.WriteLine($"Duration: {report.CaptureDuration}");
@@ -383,20 +420,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             writer.WriteLine($"{h2}Parser Warnings");
             writer.WriteLine();
-            foreach (var w in report.ParseWarnings)
-                writer.WriteLine($"{bullet}{w}");
+            foreach (var warning in report.ParseWarnings)
+                writer.WriteLine($"{bullet}{Text(warning)}");
             writer.WriteLine();
         }
 
-        var groups = report.Findings.GroupBy(f => f.Category);
-        foreach (var group in groups)
+        foreach (var group in report.Findings.GroupBy(f => f.Category))
         {
-            writer.WriteLine($"{h2}{group.Key}");
+            writer.WriteLine($"{h2}{Text(group.Key)}");
             writer.WriteLine();
 
-            foreach (var f in group)
+            foreach (var finding in group)
             {
-                string icon = f.Severity switch
+                string icon = finding.Severity switch
                 {
                     Severity.Pass => md ? ":white_check_mark:" : "[PASS]",
                     Severity.Info => md ? ":information_source:" : "[INFO]",
@@ -405,16 +441,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     _ => ""
                 };
 
-                writer.WriteLine($"{h3}{icon} {f.Title}");
-                writer.WriteLine(f.Detail);
-                if (f.ComplianceTag is not null)
-                    writer.WriteLine($"{bullet}Compliance: {f.ComplianceTag}");
-                if (f.Recommendation is not null)
-                    writer.WriteLine($"{bullet}Recommendation: {f.Recommendation}");
-                if (f.WiresharkFilter is not null)
-                    writer.WriteLine($"{bullet}Wireshark filter: {(md ? $"`{f.WiresharkFilter}`" : f.WiresharkFilter)}");
-                if (f.RelatedPacketIndices.Count > 0)
-                    writer.WriteLine($"{bullet}Related packets: {string.Join(", ", f.RelatedPacketIndices.Take(20))}");
+                writer.WriteLine($"{h3}{icon} {Text(finding.Title)}");
+                writer.WriteLine(Text(finding.Detail));
+                if (finding.ComplianceTag is not null)
+                    writer.WriteLine($"{bullet}Compliance: {Text(finding.ComplianceTag)}");
+                if (finding.Recommendation is not null)
+                    writer.WriteLine($"{bullet}Recommendation: {Text(finding.Recommendation)}");
+                if (finding.WiresharkFilter is not null)
+                    writer.WriteLine($"{bullet}Wireshark filter: {(md ? $"`{finding.WiresharkFilter.Replace("`", "'", StringComparison.Ordinal)}`" : SafeText.PlainText(finding.WiresharkFilter))}");
+                if (finding.RelatedPacketIndices.Count > 0)
+                    writer.WriteLine($"{bullet}Related packets: {string.Join(", ", finding.RelatedPacketIndices.Take(20))}");
                 writer.WriteLine();
             }
         }

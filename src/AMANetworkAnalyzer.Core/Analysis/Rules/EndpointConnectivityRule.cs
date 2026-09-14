@@ -38,16 +38,11 @@ public sealed class EndpointConnectivityRule : IAnalysisRule
         // Check each AMA endpoint pattern
         foreach (var (pattern, description) in AmaEndpoints.All)
         {
-            bool found = seenHostnames.Any(h =>
-                h.EndsWith(pattern, StringComparison.OrdinalIgnoreCase) ||
-                h.Equals(pattern, StringComparison.OrdinalIgnoreCase));
-
             var matchingHosts = seenHostnames
-                .Where(h => h.EndsWith(pattern, StringComparison.OrdinalIgnoreCase) ||
-                            h.Equals(pattern, StringComparison.OrdinalIgnoreCase))
+                .Where(h => AmaEndpoints.Matches(h, pattern))
                 .ToList();
 
-            if (found)
+            if (matchingHosts.Count > 0)
             {
                 findings.Add(new AnalysisFinding
                 {
