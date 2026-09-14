@@ -72,6 +72,9 @@ jobs:
   # Blocks secrets and personal/corporate identifiers from reaching the public repo.
   gitleaks:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,4 +83,6 @@ jobs:
       - name: Scan history and working tree
         uses: gitleaks/gitleaks-action@v2
         env:
+          # v2 refuses to scan pull requests without a token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
