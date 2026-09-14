@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:AMANetworkAnalyzer.Converters"
         xmlns:vm="clr-namespace:AMANetworkAnalyzer.ViewModels"
-        xmlns:models="clr-namespace:AMANetworkAnalyzer.Models"
+        xmlns:models="clr-namespace:AMANetworkAnalyzer.Models;assembly=AMANetworkAnalyzer.Core"
         Title="AMA Network Analyzer"
         Width="1200" Height="850"
         MinWidth="800" MinHeight="600"

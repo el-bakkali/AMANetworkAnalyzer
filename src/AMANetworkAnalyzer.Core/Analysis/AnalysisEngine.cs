@@ -25,7 +25,17 @@ public sealed class AnalysisEngine
     /// </summary>
     public AnalysisReport Analyze(string fileName, List<RawPacket> rawPackets, List<string>? parseWarnings = null)
     {
-        var parsed = PacketParser.ParseAll(rawPackets);
+        ArgumentNullException.ThrowIfNull(rawPackets);
+        return AnalyzeParsed(fileName, PacketParser.ParseAll(rawPackets), parseWarnings);
+    }
+
+    /// <summary>
+    /// Runs the diagnostic rules against packets that have already been dissected.
+    /// </summary>
+    public AnalysisReport AnalyzeParsed(
+        string fileName, List<ParsedPacket> parsed, List<string>? parseWarnings = null)
+    {
+        ArgumentNullException.ThrowIfNull(parsed);
 
         var report = new AnalysisReport
         {
@@ -35,12 +45,7 @@ public sealed class AnalysisEngine
             ParseWarnings = parseWarnings ?? []
         };
 
-        if (parsed.Count > 1)
-        {
-            var ts = parsed.Select(p => p.Timestamp).Where(t => t > DateTime.MinValue).ToList();
-            if (ts.Count > 1)
-                report.CaptureDuration = ts.Max() - ts.Min();
-        }
+        report.CaptureDuration = MeasureDuration(parsed);
 
         // Surface parse warnings as findings
         if (parseWarnings is { Count: > 0 })
@@ -57,17 +62,17 @@ public sealed class AnalysisEngine
             });
         }
 
+        var seen = new HashSet<(string Category, string Title)>();
+        foreach (var finding in report.Findings)
+            seen.Add((finding.Category, finding.Title));
+
         foreach (var rule in _rules)
         {
             try
             {
-                var findings = rule.Analyze(parsed);
-                // Deduplicate findings with identical title+category
-                foreach (var finding in findings)
+                foreach (var finding in rule.Analyze(parsed))
                 {
-                    bool isDuplicate = report.Findings.Any(f =>
-                        f.Title == finding.Title && f.Category == finding.Category);
-                    if (!isDuplicate)
+                    if (seen.Add((finding.Category, finding.Title)))
                         report.Findings.Add(finding);
                 }
             }
@@ -86,5 +91,23 @@ public sealed class AnalysisEngine
         }
 
         return report;
+    }
+
+    private static TimeSpan MeasureDuration(List<ParsedPacket> parsed)
+    {
+        DateTime earliest = DateTime.MaxValue;
+        DateTime latest = DateTime.MinValue;
+        int counted = 0;
+
+        foreach (var packet in parsed)
+        {
+            if (packet.Timestamp == DateTime.MinValue) continue;
+
+            if (packet.Timestamp < earliest) earliest = packet.Timestamp;
+            if (packet.Timestamp > latest) latest = packet.Timestamp;
+            counted++;
+        }
+
+        return counted > 1 ? latest - earliest : TimeSpan.Zero;
     }
 }

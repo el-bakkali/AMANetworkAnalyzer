@@ -1,0 +1,83 @@
+name: build
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    env:
+      CI: true
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore AMANetworkAnalyzer.sln
+
+      - name: Build
+        run: dotnet build AMANetworkAnalyzer.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test AMANetworkAnalyzer.sln -c Release --no-build --verbosity normal
+
+      - name: Publish
+        run: >
+          dotnet publish src/AMANetworkAnalyzer/AMANetworkAnalyzer.csproj
+          -c Release -r win-x64 --self-contained false -o publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AMANetworkAnalyzer-win-x64
+          path: publish/
+          retention-days: 14
+
+  # The parser consumes untrusted binary input, so static analysis runs on every change.
+  codeql:
+    runs-on: windows-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          queries: security-extended
+
+      - name: Build
+        run: dotnet build AMANetworkAnalyzer.sln -c Release
+
+      - uses: github/codeql-action/analyze@v3
+
+  # Blocks secrets and personal/corporate identifiers from reaching the public repo.
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so past commits are scanned too
+
+      - name: Scan history and working tree
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml

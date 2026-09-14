@@ -1,0 +1,34 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{csproj,props,targets,xaml,xml}]
+indent_size = 2
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.cs]
+# "Flags" is the correct domain name for a TCP flags bitfield.
+dotnet_code_quality.CA1711.allowed_suffixes = Flags
+
+# CA1031 (do not catch general exception): the analysis engine and the WPF shell
+# deliberately catch broadly so one bad rule or file cannot crash the app.
+dotnet_diagnostic.CA1031.severity = none
+
+# CA1303 (localize literals): this is a single-locale internal diagnostic tool.
+dotnet_diagnostic.CA1303.severity = none
+
+[src/AMANetworkAnalyzer.Core/Models/Models.cs]
+# Cipher suite constants use their IANA registry names, which contain underscores.
+dotnet_diagnostic.CA1707.severity = none
+
+[tests/**/*.cs]
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA5394.severity = none
