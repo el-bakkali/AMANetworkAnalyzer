@@ -34,6 +34,47 @@ public class AnalysisEngineTests
             f.Category == "DNS Resolution" && f.Severity == Severity.Pass);
     }
 
+    /// <summary>
+    /// Regression: every sovereign cloud was evaluated against every capture, so a
+    /// Commercial trace produced a dozen unreachable-endpoint errors for .us and .cn
+    /// that could never have appeared, burying the genuine findings.
+    /// </summary>
+    [Fact]
+    public void DoesNotReportEndpointsFromOtherSovereignClouds()
+    {
+        var packets = Parse(
+            CaptureBuilder.Udp("10.0.0.1", "10.0.0.2", 5353, 53, CaptureBuilder.DnsQuery(1, AmaHost)),
+            CaptureBuilder.Udp("10.0.0.2", "10.0.0.1", 53, 5353,
+                CaptureBuilder.DnsResponseWithAddress(1, AmaHost, "20.1.2.3")));
+
+        var report = new AnalysisEngine().AnalyzeParsed("commercial.pcap", packets);
+        var connectivity = report.Findings.Where(f => f.Category == "Endpoint Connectivity").ToList();
+
+        Assert.DoesNotContain(connectivity, f => f.Title.Contains("azure.us", StringComparison.Ordinal));
+        Assert.DoesNotContain(connectivity, f => f.Title.Contains("azure.cn", StringComparison.Ordinal));
+        Assert.Contains(connectivity, f => f.Title.Contains("Azure Commercial", StringComparison.Ordinal));
+        Assert.Contains(connectivity, f =>
+            f.Severity == Severity.Pass && f.Title.Contains("ods.opinsights.azure.com", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ScopesEndpointChecksToGovernmentForAGovernmentCapture()
+    {
+        const string GovHost = "workspace.ods.opinsights.azure.us";
+
+        var packets = Parse(
+            CaptureBuilder.Udp("10.0.0.1", "10.0.0.2", 5353, 53, CaptureBuilder.DnsQuery(1, GovHost)),
+            CaptureBuilder.Udp("10.0.0.2", "10.0.0.1", 53, 5353,
+                CaptureBuilder.DnsResponseWithAddress(1, GovHost, "20.1.2.3")));
+
+        var report = new AnalysisEngine().AnalyzeParsed("gov.pcap", packets);
+        var connectivity = report.Findings.Where(f => f.Category == "Endpoint Connectivity").ToList();
+
+        Assert.Contains(connectivity, f => f.Title.Contains("Azure Government", StringComparison.Ordinal));
+        Assert.DoesNotContain(connectivity, f => f.Title.Contains("azure.cn", StringComparison.Ordinal));
+        Assert.DoesNotContain(connectivity, f => f.Title.Contains("microsoftmetrics.com", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void DetectsDnsFailure()
     {

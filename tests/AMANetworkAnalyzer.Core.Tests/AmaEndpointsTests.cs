@@ -50,6 +50,27 @@ public class AmaEndpointsTests
         Assert.NotNull(AmaEndpoints.MatchEndpoint("w1.ods.opinsights.azure.com"));
         Assert.Null(AmaEndpoints.MatchEndpoint("contoso.example.com"));
     }
+
+    [Theory]
+    [InlineData("w1.ods.opinsights.azure.com", AzureCloud.Commercial)]
+    [InlineData("management.azure.us", AzureCloud.Government)]
+    [InlineData("dce.westeurope.ingest.monitor.azure.cn", AzureCloud.China)]
+    [InlineData("global.prod.microsoftmetrics.com", AzureCloud.Commercial)]
+    public void DetectCloudsIdentifiesTheSovereignCloud(string hostname, AzureCloud expected) =>
+        Assert.Equal([expected], AmaEndpoints.DetectClouds([hostname]));
+
+    [Fact]
+    public void DetectCloudsIgnoresNonAmaHostnames() =>
+        Assert.Empty(AmaEndpoints.DetectClouds(["example.com", "notods.opinsights.azure.com"]));
+
+    [Fact]
+    public void DetectCloudsReportsEveryCloudPresent()
+    {
+        var clouds = AmaEndpoints.DetectClouds(["management.azure.com", "management.azure.us"]);
+        Assert.Equal(2, clouds.Count);
+        Assert.Contains(AzureCloud.Commercial, clouds);
+        Assert.Contains(AzureCloud.Government, clouds);
+    }
 }
 
 public class SafeTextTests

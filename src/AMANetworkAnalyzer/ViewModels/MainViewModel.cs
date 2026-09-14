@@ -4,6 +4,7 @@ using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Windows;
@@ -92,7 +93,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public RelayCommand<AnalysisFinding> ShowRelatedPacketsCommand { get; }
     public RelayCommand ClearDetailCommand { get; }
     public RelayCommand<string> FilterBySeverityCommand { get; }
-
+    /// <summary>Read from the assembly so the footer cannot drift from the real version.</summary>
+    public static string AppVersion { get; } =
+        typeof(MainViewModel).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion.Split('+')[0]
+        ?? typeof(MainViewModel).Assembly.GetName().Version?.ToString(3)
+        ?? "";
     // ── Browse ───────────────────────────────────────────────────────
 
     private void Browse()

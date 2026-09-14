@@ -1,119 +1,91 @@
-# Building & Running AMA Network Analyzer
+# Building AMA Network Analyzer
+
+Run everything from the repository root.
 
 ## Prerequisites
 
-- **Windows 10/11**
-- **.NET 10 SDK** (or .NET 8/9 — change `TargetFramework` in the `.csproj` to `net8.0-windows` or `net9.0-windows`)
-- No other dependencies required
-
-Check your SDK version:
+Windows 10 or 11, and the .NET 10 SDK. Nothing else.
 
 ```powershell
 dotnet --version
 ```
 
----
-
-## Option 1: Run Directly (Development)
-
-This compiles and launches the app in one step. No `.exe` is produced in a publish folder — it runs from the build output.
+## Run it
 
 ```powershell
-dotnet run --project "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj"
+dotnet run --project src/AMANetworkAnalyzer
 ```
 
-The WPF window will open immediately. Drop a `.pcap`, `.pcapng`, or `.etl` file to start analysis.
+The window opens straight away. Drop a `.pcap`, `.pcapng`, `.etl`, or `.cab` file on it, or use Open Capture.
 
----
-
-## Option 2: Build Only (No Run)
-
-Compiles the project and produces output in the `bin\` folder:
+## Build and test
 
 ```powershell
-dotnet build "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj"
+dotnet build AMANetworkAnalyzer.sln -c Release
+dotnet test AMANetworkAnalyzer.sln -c Release
 ```
 
-The compiled exe will be at:
+The build treats warnings as errors, so anything the analyzers flag will fail it. The test project covers the parsers and the diagnostic rules. Run it before opening a pull request.
 
-```
-src\AMANetworkAnalyzer\bin\Debug\net10.0-windows\AMANetworkAnalyzer.exe
-```
+Build output lands in `src\AMANetworkAnalyzer\bin\Release\net10.0-windows\AMANetworkAnalyzer.exe`.
 
-To build Release:
+## Publish
+
+Framework-dependent, which needs the .NET 10 Desktop Runtime on the target machine:
 
 ```powershell
-dotnet build "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj" -c Release
+dotnet publish src/AMANetworkAnalyzer -c Release -r win-x64 --self-contained false -o publish
 ```
 
----
-
-## Option 3: Publish an .exe (For Distribution)
-
-### Framework-dependent (small exe, requires .NET runtime on target machine)
+Self-contained, which does not:
 
 ```powershell
-dotnet publish "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj" -c Debug -o C:\Source\AMANetworkAnalyzer\publish
+dotnet publish src/AMANetworkAnalyzer -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o publish
 ```
 
-Output: `C:\Source\AMANetworkAnalyzer\publish\AMANetworkAnalyzer.exe` (~160 KB)
+For anything you intend to hand to someone else, use `build-release.ps1`. It builds Release, runs the tests, publishes, zips the output, and writes `SHA256SUMS.txt` so recipients can verify what they got.
 
-> The target machine needs the .NET 10 Desktop Runtime installed.
-> Download from: https://dotnet.microsoft.com/download/dotnet/10.0
+## Targeting an older .NET
 
-### Self-contained single file (large exe, no runtime needed)
+Change `TargetFramework` in both project files together:
 
-> **Note:** This requires the .NET runtime packages to be available in your NuGet cache. With .NET 10 preview SDKs, this may fail. Use .NET 8 or .NET 9 GA for reliable self-contained builds.
+- `src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj` to `net8.0-windows`
+- `src\AMANetworkAnalyzer.Core\AMANetworkAnalyzer.Core.csproj` to `net8.0`
 
-```powershell
-dotnet publish "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj" -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o C:\Source\AMANetworkAnalyzer\publish
-```
-
-Output: `publish\AMANetworkAnalyzer.exe` (~60 MB, fully self-contained, no installer)
+They have to move together, or the project reference will not resolve.
 
 ---
 
-## Switching .NET Version
+## ETL and CAB support
 
-If you need to target .NET 8 or 9 instead of 10, edit the `.csproj`:
+`.etl` files from `netsh trace` are converted to pcapng by Microsoft's etl2pcapng (MIT). The app fetches v1.11.0 on first use and verifies it against a pinned SHA-256.
 
-```xml
-<!-- Change this line in AMANetworkAnalyzer.csproj -->
-<TargetFramework>net8.0-windows</TargetFramework>
-```
+It looks in three absolute locations, in order:
 
-Then all build/publish commands work the same way.
+1. `%LOCALAPPDATA%\AMANetworkAnalyzer\tools\etl2pcapng.exe`, where downloads are cached
+2. `tools\etl2pcapng.exe` next to the app
+3. `etl2pcapng.exe` next to the app
 
----
+The working directory and `PATH` are deliberately not searched. An attacker can influence both, and this binary gets executed (CWE-426). The hash is re-checked on every launch, so a copy you supply yourself has to match the pinned one exactly.
 
-## ETL File Support
+### Air-gapped machines
 
-For `.etl` files (from `netsh trace start`), the app uses Microsoft's open-source `etl2pcapng.exe` (MIT license).
-
-**It downloads automatically with integrity verification.** When you drop an `.etl` file:
-1. The app checks for `etl2pcapng.exe` locally (same folder, `tools\` subfolder, or system PATH)
-2. If not found, downloads **v1.11.0** from https://github.com/microsoft/etl2pcapng/releases/tag/v1.11.0
-3. Verifies integrity before use
-4. Saves verified binary to `tools\` folder (one-time download, ~160 KB)
-
-### Offline / air-gapped machines
-
-If the machine has no internet access, manually download `etl2pcapng.exe` from the v1.11.0 release and place it:
-- Same folder as `AMANetworkAnalyzer.exe`, or
-- In a `tools\` subfolder next to the exe, or
-- Anywhere on the system `PATH`
+Download `etl2pcapng.exe` from the v1.11.0 release on a connected machine and put it in any of the three locations above. A different build will be rejected, including a newer one.
 
 ### Upgrading etl2pcapng
 
-To pin to a newer version, update the constants at the top of `EtlConverter.cs` (version, URL, and hash).
+Update `PinnedVersion`, `DownloadUrl`, `ExpectedSha256` and `ExpectedSizeBytes` together at the top of `EtlConverter.cs`.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Solution |
+| Problem | Fix |
 |---|---|
-| `dotnet` not recognized | Install .NET SDK from https://dotnet.microsoft.com |
-| `NU1100: Unable to resolve` on publish | Use `-c Debug` without `-r win-x64 --self-contained`, or switch to .NET 8/9 GA |
-| App launches but window is blank | Check Windows display scaling; try running at 100% |
-| ETL files show download error | Check internet connectivity; or manually place `etl2pcapng.exe` in the `tools\` subfolder |
+| `dotnet` not recognised | Install the .NET SDK from https://dotnet.microsoft.com |
+| Build fails on a warning | Intentional. `TreatWarningsAsErrors` is on, so fix the warning |
+| `NU1100: Unable to resolve` on publish | Drop `--self-contained` and publish framework-dependent |
+| Window opens blank | Check display scaling and try 100% |
+| ETL download fails | No connectivity. Put a hash-matching `etl2pcapng.exe` in `%LOCALAPPDATA%\AMANetworkAnalyzer\tools\` |
+| "SHA-256 verification FAILED" | The file does not match the pinned hash. Re-download from the official release rather than working around it |
+
