@@ -1,92 +1,84 @@
 # AMA Network Analyzer
 
-A Windows desktop tool for novice engineers to diagnose Azure Monitor Agent (AMA) network connectivity issues by analyzing packet capture files.
+Drop a network capture on it and find out why the Azure Monitor Agent cannot reach Azure.
 
-**Drop a `.pcap`, `.pcapng`, `.etl`, or `.cab` file → get an instant diagnostic report. Click any finding to drill down to the exact packets.**
+Hand it a `.pcap`, `.pcapng`, `.etl`, or `.cab` and it reports what is broken. Click any finding to see the packets behind it.
 
-## Features
+A Windows desktop app (WPF, .NET 10), written for engineers who need an answer out of a capture without first learning Wireshark display filters.
 
-- **Drag-and-drop** `.pcap`, `.pcapng`, `.etl`, and `.cab` capture files
-- **Drill-down packet detail panel** — Click any finding or severity badge to view the exact affected packets with timestamps, IPs, ports, DNS/TLS/HTTP details
-- **Streaming pcap reader** — Memory-efficient file processing (supports files up to 2 GB without loading into memory)
-- **.cab file support** — Windows `netsh trace` `.cab` archives are automatically extracted and converted
-- **Security compliance tags** — Findings tagged with OWASP ASVS, NIST CSF, and CIS Controls references
-- **7 automated diagnostic rules** based on the AMA Network Troubleshooting Guide:
-  1. **Endpoint Connectivity** — Verifies traffic to all required AMA endpoints
-  2. **DNS Resolution** — Checks DNS queries/responses for AMA domains (NXDOMAIN, SERVFAIL)
-  3. **Firewall Blocking** — Detects TCP RST packets and SYN retransmissions
-  4. **Proxy Detection** — Finds HTTP CONNECT, proxy auth (407), and common proxy ports
-  5. **TLS/SSL Analysis** — Detects TLS alerts, handshake failures, and version issues
-  6. **TLS Cipher Compliance** — Validates offered/selected ciphers against AMA requirements:
-     - TLS 1.3: `TLS_AES_256_GCM_SHA384`, `TLS_AES_128_GCM_SHA256`
-     - TLS 1.2: `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`, `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`
-  7. **Private Link / AMPLS Detection** — Detects when AMA endpoints resolve to private IPs, indicates AMPLS usage, and flags mixed public/private DNS misconfigurations
-- **File integrity warnings** — Detects truncated/corrupted pcap files and surfaces parse warnings
-- **Input validation** — File extension validation with magic-number fallback, path traversal protection
-- **Sovereign cloud support** — Azure Commercial (`.com`), Azure Government (`.us`), and Azure China 21Vianet (`.cn`)
-- **Wireshark filter suggestions** — Each finding includes a clickable Wireshark display filter (copies to clipboard)
-- **Async export** — Non-blocking report export to text or Markdown
-- **Finding deduplication** — Identical findings are merged instead of shown multiple times
-- **Dark-themed WPF UI** with pass/warn/error severity badges and split-pane drill-down
+## What it checks
 
-## Zero Dependencies
+Seven rules run against every capture, based on the AMA network troubleshooting guide.
 
-- No NuGet packages
-- No Wireshark/tshark installation required
-- No Npcap/WinPcap
-- No manual ETL tool setup — `etl2pcapng` is auto-downloaded on first ETL use
-- Pure managed .NET — pcap/pcapng parsing, packet dissection, DNS/TLS/HTTP parsing all built-in
+| Rule | Looks for |
+|---|---|
+| Endpoint connectivity | Traffic to each AMA endpoint required by the cloud the capture belongs to |
+| DNS resolution | NXDOMAIN and SERVFAIL responses for AMA domains |
+| Firewall blocking | TCP resets and SYN retransmissions |
+| Proxy detection | HTTP CONNECT, 407 proxy auth, common proxy ports |
+| TLS analysis | Alerts, handshake failures, version problems |
+| TLS cipher compliance | Offered and selected ciphers against what AMA requires |
+| Private Link / AMPLS | AMA endpoints resolving to private IPs, and mixed public/private DNS |
 
-## Quick Start
+The cipher rule wants `TLS_AES_256_GCM_SHA384` or `TLS_AES_128_GCM_SHA256` on TLS 1.3, and `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384` or `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` on TLS 1.2.
 
-See [BUILDING.md](BUILDING.md) for full build, run, and publish instructions.
+Every finding carries a severity, a recommendation, and a Wireshark display filter you can copy. Findings are deduplicated, so a problem that shows up in four hundred packets is reported once. Truncated or corrupt captures are flagged rather than silently half-parsed.
+
+## Dependencies
+
+The application pulls no NuGet packages. Pcap and pcapng reading, packet dissection, and the DNS, TLS and HTTP decoders are hand-written against the .NET base class library. You do not need Wireshark, tshark, Npcap or WinPcap.
+
+Two exceptions. The test project uses xUnit. And ETL conversion shells out to Microsoft's [etl2pcapng](https://github.com/microsoft/etl2pcapng) (MIT), which is fetched on first use and hash-checked every time it runs.
+
+## Quick start
+
+You need the .NET 10 SDK.
 
 ```powershell
-# Run directly (requires .NET 10 SDK)
-dotnet run --project "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj"
+# Run it
+dotnet run --project src/AMANetworkAnalyzer
 
-# Build the exe
-dotnet publish "C:\Source\AMANetworkAnalyzer\src\AMANetworkAnalyzer\AMANetworkAnalyzer.csproj" -c Debug -o publish
-# Output: publish\AMANetworkAnalyzer.exe
+# Test it
+dotnet test
+
+# Publish an exe
+dotnet publish src/AMANetworkAnalyzer -c Release -r win-x64 --self-contained false -o publish
 ```
 
-## ETL and CAB Support
+[BUILDING.md](BUILDING.md) covers self-contained builds and air-gapped setup.
 
-For Microsoft `.etl` network traces (from `netsh trace`), the tool uses Microsoft's open-source [etl2pcapng](https://github.com/microsoft/etl2pcapng) converter (MIT license).
+## ETL and CAB files
 
-For `.cab` archives (also produced by `netsh trace`), the tool automatically extracts the `.etl` file using Windows' built-in `expand.exe`, then converts it.
+`netsh trace` produces `.etl` files, and sometimes wraps them in a `.cab`. Both work.
 
-**No setup required.** Just drop an `.etl` or `.cab` file. The app will:
-1. If `.cab` → extract `.etl` from the archive
-2. Check if `etl2pcapng.exe` is already available locally
-3. If not found, **download v1.11.0** from [GitHub releases](https://github.com/microsoft/etl2pcapng/releases/tag/v1.11.0)
-4. **Verify SHA-256 integrity** before execution
-5. Convert the ETL to pcapng and analyze it
+A `.cab` is expanded using the `expand.exe` that ships with Windows, resolved from the system directory. The extracted `.etl` is then re-checked to confirm it genuinely sits inside the extraction folder before anything opens it.
 
-The download happens once and is cached for future use. For offline/air-gapped machines, manually place `etl2pcapng.exe` next to the app or in a `tools\` subfolder.
+An `.etl` is converted to pcapng by etl2pcapng. On first use the app fetches v1.11.0 from the GitHub release over HTTPS, verifies it against a pinned SHA-256, and caches it under `%LOCALAPPDATA%\AMANetworkAnalyzer\tools\`. The hash is re-checked on every launch, not only after the download.
 
-## What's New in v2.0
+On an air-gapped machine, put `etl2pcapng.exe` in that folder yourself, or next to the exe, or in a `tools\` subfolder beside it. It still has to match the pinned hash, so copy it from the official release.
 
-- **Drill-down UI** — Click any finding → see the exact affected packets (IPs, ports, DNS, TLS, HTTP) in a detail panel. Click severity badges (PASS/INFO/WARN/ERROR) to filter.
-- **.cab file support** — Windows `netsh trace` `.cab` archives are automatically extracted and analyzed.
-- **Streaming pcap reader** — Files streamed from disk instead of loaded into memory. Supports up to 2 GB.
-- **Truncation warnings** — Truncated/corrupted pcap files are detected and surfaced as warnings.
-- **Security compliance tags** — Findings include OWASP, NIST CSF, and CIS Controls references.
-- **Input validation** — File extension + magic-number validation, path traversal protection.
-- **Async export** — Report export runs asynchronously so it doesn't block the UI.
-- **Finding deduplication** — Identical findings are merged instead of shown multiple times.
+## Security
 
-## Security & Privacy
+Captures never leave the machine. No telemetry, no phone-home. The only outbound request the app can make is the etl2pcapng download.
 
-- **100% offline analysis** — Your files are processed locally. No data is sent to the cloud, no telemetry, no phone-home
-- **No external dependencies** — Zero third-party libraries. Built entirely on .NET standard libraries
-- **Input validation** — File extension allowlisting, magic-number verification, path traversal protection (OWASP ASVS)
-- **SHA-256 integrity verification** — `etl2pcapng` downloads are verified against a pinned hash before execution
-- **Compliance-aware findings** — Tagged with OWASP ASVS, NIST CSF, and CIS Controls references
+The parser eats attacker-controlled binary input, so that is where most of the effort went.
 
-## AMA Endpoints Checked
+- Managed, bounds-checked parsing. `AllowUnsafeBlocks` is off and warnings are errors.
+- Input is validated by extension allowlist with a magic-number fallback, and anything over 2 GB is refused.
+- etl2pcapng is only ever located by absolute path. The working directory and `PATH` are never consulted, because an attacker can influence both (CWE-426).
+- The file handle used for hash verification stays open across process start, so the bytes that were hashed are the bytes that execute (CWE-367).
+- Files extracted from a `.cab` are re-resolved against the extraction root, and reparse points are skipped (CWE-22).
+- Hostnames and other capture-derived strings are escaped before they are written into an exported report.
 
-All endpoints checked for Azure Commercial (`.com`), Azure Government (`.us`), and Azure China 21Vianet (`.cn`).
+Findings carry OWASP ASVS, NIST CSF, and CIS Controls tags.
+
+CI runs the tests, CodeQL with `security-extended`, and gitleaks over the full history on every push.
+
+## AMA endpoints checked
+
+The table lists the Azure Commercial names. Government (`.us`) and China 21Vianet (`.cn`) have equivalents for all but the metrics service.
+
+A machine talks to one cloud, so the analyzer works out which one the capture belongs to and only checks that set. Reporting the other two as unreachable would add a dozen guaranteed false errors and bury the real ones.
 
 | Endpoint | Purpose |
 |---|---|
@@ -100,61 +92,67 @@ All endpoints checked for Azure Commercial (`.com`), Azure Government (`.us`), a
 
 > Endpoints resolving to private IPs (10.x, 172.16-31.x, 192.168.x) are flagged as Private Link / AMPLS usage.
 
-## Project Structure
+## Project layout
+
+All the parsing and analysis lives in a library with no WPF dependency, which is what makes it testable.
 
 ```
-src/AMANetworkAnalyzer/
-├── Models/Models.cs          # RawPacket, ParsedPacket, DnsInfo, TlsInfo, Findings, AMA endpoints/ciphers
+src/AMANetworkAnalyzer.Core/
+├── Models/
+│   ├── Models.cs             # Packets, findings, AMA endpoints and cipher suites
+│   └── SafeText.cs           # Escaping for capture-derived strings
 ├── Parsers/
-│   ├── PcapReader.cs         # Reads pcap (classic + nanosecond) and pcapng files
-│   ├── PacketParser.cs       # Dissects Ethernet/IP/TCP/UDP/DNS/TLS/HTTP
-│   └── EtlConverter.cs       # ETL → pcapng conversion via etl2pcapng.exe
-├── Analysis/
-│   ├── IAnalysisRule.cs      # Rule interface
-│   ├── AnalysisEngine.cs     # Orchestrates all rules
-│   └── Rules/
-│       ├── EndpointConnectivityRule.cs
-│       ├── DnsResolutionRule.cs
-│       ├── FirewallBlockRule.cs
-│       ├── ProxyDetectionRule.cs
-│       ├── TlsAnalysisRule.cs
-│       ├── TlsCipherComplianceRule.cs
-│       └── PrivateLinkDetectionRule.cs
-├── ViewModels/
-│   ├── MainViewModel.cs      # MVVM binding, file loading, analysis orchestration
-│   └── RelayCommand.cs       # ICommand implementation
-├── Converters/Converters.cs  # WPF value converters (severity → color/icon)
-├── Themes/Dark.xaml          # Dark color palette and control styles
-├── MainWindow.xaml/cs        # Main UI with drag-drop
-├── App.xaml/cs               # Application entry point
-└── GlobalUsings.cs           # Shared using directives
+│   ├── PcapReader.cs         # pcap (classic + nanosecond) and pcapng, both byte orders
+│   ├── PacketParser.cs       # Ethernet, IPv4, TCP, UDP, DNS, TLS, HTTP
+│   ├── EtlConverter.cs       # etl2pcapng download, verification and invocation
+│   └── CabExtractor.cs       # .cab expansion with containment checks
+└── Analysis/
+    ├── IAnalysisRule.cs
+    ├── AnalysisEngine.cs     # Runs the rules, deduplicates findings
+    └── Rules/                # The seven diagnostic rules
+
+src/AMANetworkAnalyzer/       # WPF shell
+├── ViewModels/               # Binding, file loading, cancellation
+├── Converters/               # Severity to colour and icon
+├── Themes/Dark.xaml
+└── MainWindow.xaml           # Drag-and-drop target, split-pane drill-down
+
+tests/AMANetworkAnalyzer.Core.Tests/
+├── CaptureBuilder.cs         # Builds real pcap and pcapng bytes in both byte orders
+└── *Tests.cs                 # 91 tests
 ```
 
-## How It Works
+## How it works
 
-1. **File Loading** — PcapReader detects the format (pcap vs pcapng via magic bytes) and extracts raw packets
-2. **Packet Parsing** — PacketParser dissects each packet: Ethernet → IPv4 → TCP/UDP → DNS/TLS/HTTP
-3. **Analysis** — Seven rules run against the parsed packets, each producing findings with severity levels
-4. **Display** — Results are grouped by category with color-coded severity, actionable recommendations, and Wireshark filters
+The reader identifies the format from the magic bytes, then walks the file once, dissecting each packet as it is read. Ethernet or Linux cooked or raw IP, then IPv4, then TCP or UDP, then DNS, TLS or HTTP. The seven rules run over the parsed result and each emits findings with a severity. The UI groups those by category and lets you click through to the packets that produced them.
 
-## Supported Capture Formats
+Reading and parsing happen in a single pass. Earlier versions read the whole file twice, once for the report and once for drill-down, which is now fixed. On a synthetic 200,000-packet capture that made analysis about 1.27 times faster, cut allocation churn by roughly 30 percent, and lowered peak working set by about 16 percent.
+
+## Supported capture formats
 
 | Format | Extension | Notes |
 |---|---|---|
 | pcap (libpcap) | `.pcap`, `.cap` | Classic and nanosecond variants, both byte orders |
-| pcapng | `.pcapng` | Section/Interface/Enhanced Packet blocks |
-| ETL | `.etl` | Requires etl2pcapng.exe for conversion |
+| pcapng | `.pcapng` | Section, interface and enhanced packet blocks |
+| ETL | `.etl` | Converted by etl2pcapng |
+| CAB | `.cab` | Expanded, then the `.etl` inside is converted |
 
-## Security & Privacy
+Link layers: Ethernet (1), Linux cooked capture v1 (113), and raw IP (101).
 
-- **100% offline analysis** — Your capture files are processed locally on your machine. No data is sent to the cloud, no telemetry, no phone-home
-- **No external dependencies** — Zero third-party libraries. Built entirely on .NET standard libraries
-- **Standalone executable** — No installer, no registry changes, no background services
-- **Verified ETL converter** — The optional `etl2pcapng.exe` download is integrity-checked before use
-- **HTTPS only** — The single outbound network call (ETL tool download) uses HTTPS exclusively
+## Limitations
 
-## Link Layer Support
+Worth knowing before you file a bug.
 
-- Ethernet (type 1)
-- Linux cooked capture v1 (type 113)
-- Raw IP (type 101)
+- IPv4 only. IPv6 packets are skipped.
+- TCP streams are not reassembled, so a TLS handshake split across segments can be missed.
+- Memory tracks packet count rather than file size. A synthetic 24 MB capture holding 200,000 packets settles around 134 MB. The 2 GB ceiling is a refusal threshold, not a promise that a 2 GB capture will fit in RAM.
+- Windows only, and it needs a desktop session. There is no command-line mode.
+- The app is not code-signed. If you did not build it yourself, check it against the `SHA256SUMS.txt` published with the release.
+
+## Contributing
+
+Run `dotnet test` before opening a pull request. The build treats warnings as errors, so a warning will fail CI.
+
+If you touch `PcapReader` or `PacketParser`, add a test. `CaptureBuilder` constructs real capture bytes, including deliberately malformed ones, so there is no need to check binary fixtures into the repo.
+
+Licensed under MIT.

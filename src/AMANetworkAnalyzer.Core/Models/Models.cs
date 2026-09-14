@@ -224,37 +224,70 @@ public static class AmaCipherSuites
 }
 
 // ── AMA endpoints ────────────────────────────────────────────────────
+
+/// <summary>Sovereign cloud an endpoint belongs to.</summary>
+public enum AzureCloud { Commercial, Government, China }
+
 public static class AmaEndpoints
 {
     // Endpoint patterns for Azure Commercial (.com), Government (.us), and China 21Vianet (.cn)
     // See: https://learn.microsoft.com/azure/azure-monitor/agents/azure-monitor-agent-network-configuration
-    public static readonly (string Pattern, string Description)[] All =
+    public static readonly (string Pattern, string Description, AzureCloud Cloud)[] All =
     [
         // Azure Commercial
-        ("global.handler.control.monitor.azure.com", "Global control service"),
-        ("handler.control.monitor.azure.com", "Regional control service (DCR fetch)"),
-        ("ods.opinsights.azure.com", "Log data ingestion (ODS)"),
-        ("ingest.monitor.azure.com", "DCE data ingestion"),
-        ("management.azure.com", "ARM (custom metrics)"),
-        ("monitoring.azure.com", "Custom metrics ingestion"),
-        ("global.prod.microsoftmetrics.com", "Metrics service"),
+        ("global.handler.control.monitor.azure.com", "Global control service", AzureCloud.Commercial),
+        ("handler.control.monitor.azure.com", "Regional control service (DCR fetch)", AzureCloud.Commercial),
+        ("ods.opinsights.azure.com", "Log data ingestion (ODS)", AzureCloud.Commercial),
+        ("ingest.monitor.azure.com", "DCE data ingestion", AzureCloud.Commercial),
+        ("management.azure.com", "ARM (custom metrics)", AzureCloud.Commercial),
+        ("monitoring.azure.com", "Custom metrics ingestion", AzureCloud.Commercial),
+        ("global.prod.microsoftmetrics.com", "Metrics service", AzureCloud.Commercial),
 
         // Azure Government
-        ("global.handler.control.monitor.azure.us", "Global control service (Gov)"),
-        ("handler.control.monitor.azure.us", "Regional control service (Gov)"),
-        ("ods.opinsights.azure.us", "Log data ingestion (Gov)"),
-        ("ingest.monitor.azure.us", "DCE data ingestion (Gov)"),
-        ("management.azure.us", "ARM (Gov)"),
-        ("monitoring.azure.us", "Custom metrics ingestion (Gov)"),
+        ("global.handler.control.monitor.azure.us", "Global control service (Gov)", AzureCloud.Government),
+        ("handler.control.monitor.azure.us", "Regional control service (Gov)", AzureCloud.Government),
+        ("ods.opinsights.azure.us", "Log data ingestion (Gov)", AzureCloud.Government),
+        ("ingest.monitor.azure.us", "DCE data ingestion (Gov)", AzureCloud.Government),
+        ("management.azure.us", "ARM (Gov)", AzureCloud.Government),
+        ("monitoring.azure.us", "Custom metrics ingestion (Gov)", AzureCloud.Government),
 
         // Azure China (21Vianet)
-        ("global.handler.control.monitor.azure.cn", "Global control service (China)"),
-        ("handler.control.monitor.azure.cn", "Regional control service (China)"),
-        ("ods.opinsights.azure.cn", "Log data ingestion (China)"),
-        ("ingest.monitor.azure.cn", "DCE data ingestion (China)"),
-        ("management.azure.cn", "ARM (China)"),
-        ("monitoring.azure.cn", "Custom metrics ingestion (China)"),
+        ("global.handler.control.monitor.azure.cn", "Global control service (China)", AzureCloud.China),
+        ("handler.control.monitor.azure.cn", "Regional control service (China)", AzureCloud.China),
+        ("ods.opinsights.azure.cn", "Log data ingestion (China)", AzureCloud.China),
+        ("ingest.monitor.azure.cn", "DCE data ingestion (China)", AzureCloud.China),
+        ("management.azure.cn", "ARM (China)", AzureCloud.China),
+        ("monitoring.azure.cn", "Custom metrics ingestion (China)", AzureCloud.China),
     ];
+
+    /// <summary>
+    /// Sovereign clouds with at least one endpoint present in <paramref name="hostnames"/>.
+    /// A machine talks to exactly one cloud, so flagging the other two as unreachable would
+    /// bury the real findings under a dozen guaranteed false errors.
+    /// </summary>
+    public static HashSet<AzureCloud> DetectClouds(IEnumerable<string> hostnames)
+    {
+        ArgumentNullException.ThrowIfNull(hostnames);
+
+        var clouds = new HashSet<AzureCloud>();
+        foreach (string hostname in hostnames)
+        {
+            foreach (var (pattern, _, cloud) in All)
+            {
+                if (Matches(hostname, pattern))
+                    clouds.Add(cloud);
+            }
+        }
+        return clouds;
+    }
+
+    public static string DisplayName(AzureCloud cloud) => cloud switch
+    {
+        AzureCloud.Commercial => "Azure Commercial",
+        AzureCloud.Government => "Azure Government",
+        AzureCloud.China => "Azure China 21Vianet",
+        _ => cloud.ToString()
+    };
 
     /// <summary>
     /// True when <paramref name="hostname"/> is the pattern itself or a DNS child of it.
@@ -279,7 +312,7 @@ public static class AmaEndpoints
     /// <summary>Checks if a hostname matches any AMA endpoint pattern.</summary>
     public static bool IsAmaEndpoint(string? hostname)
     {
-        foreach (var (pattern, _) in All)
+        foreach (var (pattern, _, _) in All)
         {
             if (Matches(hostname, pattern))
                 return true;
@@ -290,7 +323,7 @@ public static class AmaEndpoints
     /// <summary>Returns the matching endpoint description, or null.</summary>
     public static string? MatchEndpoint(string? hostname)
     {
-        foreach (var (pattern, desc) in All)
+        foreach (var (pattern, desc, _) in All)
         {
             if (Matches(hostname, pattern))
                 return desc;
